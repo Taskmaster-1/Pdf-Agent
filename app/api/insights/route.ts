@@ -1,6 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import Groq from "groq-sdk";
 
+const ALLOWED_MODELS = new Set([
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant",
+  "mixtral-8x7b-32768",
+  "gemma2-9b-it",
+  "deepseek-r1-distill-llama-70b",
+]);
+
+const MAX_TEXT_CHARS = 20_000; // server-side guard
+
 const SYSTEM = `You are an expert document analyst. Analyze the provided PDF text and return a JSON object with this exact structure:
 
 {
@@ -29,17 +39,23 @@ export async function POST(req: NextRequest) {
   try {
     const { text, apiKey, model } = await req.json();
 
-    if (!apiKey) {
+    if (!apiKey || typeof apiKey !== "string") {
       return NextResponse.json({ error: "No API key provided." }, { status: 401 });
     }
-    if (!text) {
+    if (!model || !ALLOWED_MODELS.has(model)) {
+      return NextResponse.json({ error: "Invalid or unsupported model." }, { status: 400 });
+    }
+    if (!text || typeof text !== "string") {
       return NextResponse.json({ error: "No text provided." }, { status: 400 });
+    }
+    if (text.length > MAX_TEXT_CHARS) {
+      return NextResponse.json({ error: "Document text too large." }, { status: 400 });
     }
 
     const groq = new Groq({ apiKey, dangerouslyAllowBrowser: false });
 
     const completion = await groq.chat.completions.create({
-      model: model || "llama-3.3-70b-versatile",
+      model,
       messages: [
         { role: "system", content: SYSTEM },
         { role: "user", content: `Analyze this document:\n\n${text}` },
@@ -52,10 +68,11 @@ export async function POST(req: NextRequest) {
     const raw = completion.choices[0]?.message?.content || "{}";
     const data = JSON.parse(raw);
     return NextResponse.json(data);
-  } catch (e: any) {
-    console.error("Insights error:", e);
-    const msg = e?.error?.message || e?.message || "Failed to generate insights";
-    const status = e?.status || 500;
+  } catch (e: unknown) {
+    const err = e as { error?: { message?: string }; message?: string; status?: number };
+    console.error("Insights error:", err);
+    const msg = err?.error?.message || err?.message || "Failed to generate insights";
+    const status = err?.status || 500;
     return NextResponse.json({ error: msg }, { status });
   }
 }

@@ -5,34 +5,36 @@ import { PDFDoc, AppConfig } from "@/app/page";
 import { GROQ_MODELS } from "./ApiKeySetup";
 import SettingsPanel from "./SettingsPanel";
 
-declare global { interface Window { pdfjsLib: any; } }
+const MAX_PAGES_PARSED = 40;
 
-async function extractPDFText(file: File): Promise<{ text: string; pages: number }> {
-  return new Promise((resolve, reject) => {
-    const load = () => {
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-      file.arrayBuffer().then(async (buf) => {
-        try {
-          const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise;
-          let text = "";
-          const max = Math.min(pdf.numPages, 40);
-          for (let i = 1; i <= max; i++) {
-            const page = await pdf.getPage(i);
-            const content = await page.getTextContent();
-            text += `\n[Page ${i}]\n${content.items.map((x: any) => x.str).join(" ")}`;
-          }
-          resolve({ text: text.trim(), pages: pdf.numPages });
-        } catch (e) { reject(e); }
-      });
-    };
-    if (document.querySelector('script[src*="pdf.min.js"]') && window.pdfjsLib) { load(); return; }
-    const script = document.createElement("script");
-    script.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
-    script.onload = load;
-    script.onerror = () => reject(new Error("Failed to load PDF.js"));
-    document.head.appendChild(script);
-  });
+/**
+ * Extracts text from a PDF using the installed pdfjs-dist package.
+ * The worker URL is built dynamically from the package version to guarantee
+ * the main thread and worker are always on the same version (fixes the v3/v6 mismatch).
+ */
+async function extractPDFText(file: File): Promise<{ text: string; pages: number; truncated: boolean }> {
+  // Dynamic import ensures pdfjs only loads in the browser
+  const pdfjs = await import("pdfjs-dist");
+
+  // Use unpkg with the exact installed version — always version-consistent
+  pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
+
+  const totalPages = pdf.numPages;
+  const pagesToRead = Math.min(totalPages, MAX_PAGES_PARSED);
+  let text = "";
+
+  for (let i = 1; i <= pagesToRead; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    text += `\n[Page ${i}]\n${content.items
+      .map((x) => ("str" in x ? x.str : ""))
+      .join(" ")}`;
+  }
+
+  return { text: text.trim(), pages: totalPages, truncated: totalPages > MAX_PAGES_PARSED };
 }
 
 type Props = {
@@ -45,6 +47,7 @@ type Props = {
 export default function UploadZone({ onDoc, config, onChangeKey, onOpenSettings }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [truncationWarning, setTruncationWarning] = useState("");
   const [showSettings, setShowSettings] = useState(false);
   const modelLabel = GROQ_MODELS.find(m => m.id === config.model)?.label ?? config.model;
 
@@ -52,13 +55,21 @@ export default function UploadZone({ onDoc, config, onChangeKey, onOpenSettings 
     const file = files[0];
     if (!file) return;
     if (file.type !== "application/pdf") { setError("Please upload a PDF file."); return; }
-    if (file.size > 50 * 1024 * 1024) { setError("File too large. Max 50MB."); return; }
-    setLoading(true); setError("");
+    if (file.size > 50 * 1024 * 1024) { setError("File too large. Max 50 MB."); return; }
+    setLoading(true);
+    setError("");
+    setTruncationWarning("");
     try {
-      const { text, pages } = await extractPDFText(file);
+      const { text, pages, truncated } = await extractPDFText(file);
+      if (truncated) {
+        setTruncationWarning(
+          `⚠️ Your PDF has ${pages} pages — only the first ${MAX_PAGES_PARSED} pages were read. The AI will work with that portion.`
+        );
+      }
       onDoc({ name: file.name, text, pages });
-    } catch (e: any) {
-      setError(e.message || "Failed to read PDF.");
+    } catch (e: unknown) {
+      const err = e as { message?: string };
+      setError(err.message || "Failed to read PDF.");
     } finally { setLoading(false); }
   }, [onDoc]);
 
@@ -77,10 +88,11 @@ export default function UploadZone({ onDoc, config, onChangeKey, onOpenSettings 
             <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#34d399", display: "inline-block", flexShrink: 0 }} />
             <span style={{ fontSize: 12, color: "var(--text2)" }}>{modelLabel}</span>
           </div>
-          <button onClick={() => setShowSettings(true)} style={{
-            fontSize: 12, padding: "4px 12px", borderRadius: 8,
-            border: "1px solid var(--border)", background: "transparent", color: "var(--text2)", cursor: "pointer",
-          }}>
+          <button
+            onClick={() => setShowSettings(true)}
+            aria-label="Open settings"
+            style={{ fontSize: 12, padding: "4px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "transparent", color: "var(--text2)", cursor: "pointer" }}
+          >
             ⚙️ Settings
           </button>
         </div>
@@ -93,7 +105,7 @@ export default function UploadZone({ onDoc, config, onChangeKey, onOpenSettings 
             Drop your <span style={{ color: "var(--accent2)" }}>PDF</span>
           </h1>
           <p style={{ fontSize: "0.95rem", color: "var(--text2)", maxWidth: 380, margin: "0 auto", lineHeight: 1.6 }}>
-            Up to 50 MB · 40 pages · Cards + chat powered by {modelLabel}
+            Up to 50 MB · Up to {MAX_PAGES_PARSED} pages · Cards + chat powered by {modelLabel}
           </p>
         </div>
 
@@ -106,7 +118,7 @@ export default function UploadZone({ onDoc, config, onChangeKey, onOpenSettings 
           background: isDragActive ? "rgba(124,106,247,0.08)" : "var(--bg2)",
           transition: "all 0.2s",
         }}>
-          <input {...getInputProps()} />
+          <input {...getInputProps()} aria-label="Upload PDF" />
           <div style={{ fontSize: 44, marginBottom: "1rem" }}>📄</div>
           {loading ? (
             <>
@@ -123,8 +135,15 @@ export default function UploadZone({ onDoc, config, onChangeKey, onOpenSettings 
           )}
         </div>
 
+        {/* Truncation warning */}
+        {truncationWarning && (
+          <div style={{ marginTop: "1rem", fontSize: 13, background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.3)", padding: "10px 16px", borderRadius: 10, color: "var(--amber)", maxWidth: 500, width: "100%" }}>
+            {truncationWarning}
+          </div>
+        )}
+
         {error && (
-          <div style={{ marginTop: "1rem", color: "#f87171", fontSize: 14, background: "rgba(248,113,113,0.1)", padding: "10px 16px", borderRadius: 10 }}>
+          <div style={{ marginTop: "1rem", color: "#f87171", fontSize: 14, background: "rgba(248,113,113,0.1)", padding: "10px 16px", borderRadius: 10, maxWidth: 500, width: "100%" }}>
             {error}
           </div>
         )}
@@ -153,8 +172,6 @@ export default function UploadZone({ onDoc, config, onChangeKey, onOpenSettings 
           onClose={() => setShowSettings(false)}
         />
       )}
-
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }

@@ -1,32 +1,8 @@
 "use client";
-import { useState, useEffect } from "react";
-import { PDFDoc } from "@/app/page";
-
-type Card = {
-  id: string;
-  type: "concept" | "insight" | "warning" | "quote" | "stat" | "summary";
-  title: string;
-  body: string;
-  tags?: string[];
-  emphasis?: string;
-};
-
-type InsightData = {
-  summary: string;
-  cards: Card[];
-  topics: string[];
-};
-
-const TYPE_STYLES: Record<Card["type"], { icon: string; border: string; badge: string; badgeText: string }> = {
-  concept:  { icon: "💡", border: "var(--accent)",  badge: "rgba(124,106,247,0.15)", badgeText: "var(--accent2)" },
-  insight:  { icon: "🔍", border: "var(--green)",   badge: "rgba(52,211,153,0.12)",  badgeText: "var(--green)"   },
-  warning:  { icon: "⚠️", border: "var(--amber)",   badge: "rgba(251,191,36,0.12)",  badgeText: "var(--amber)"   },
-  quote:    { icon: "💬", border: "var(--text3)",   badge: "rgba(255,255,255,0.05)", badgeText: "var(--text2)"   },
-  stat:     { icon: "📊", border: "#60a5fa",        badge: "rgba(96,165,250,0.12)",  badgeText: "#93c5fd"        },
-  summary:  { icon: "📋", border: "#f472b6",        badge: "rgba(244,114,182,0.12)", badgeText: "#f9a8d4"        },
-};
-
-import { AppConfig } from "@/app/page";
+import { useState, useEffect, useCallback } from "react";
+import { PDFDoc, AppConfig } from "@/app/page";
+import { Card, InsightData } from "@/lib/types";
+import { TYPE_STYLES } from "@/lib/cardStyles";
 import CardChatDrawer from "./CardChatDrawer";
 
 export default function InsightsPanel({ doc, config, onSwitchToChat }: { doc: PDFDoc; config: AppConfig; onSwitchToChat: () => void }) {
@@ -38,36 +14,51 @@ export default function InsightsPanel({ doc, config, onSwitchToChat }: { doc: PD
   const [filter, setFilter] = useState<string>("all");
   const [selectedCardForChat, setSelectedCardForChat] = useState<Card | null>(null);
 
-  useEffect(() => {
-    generate();
-  }, [doc.text]);
-
-  async function generate() {
+  const generate = useCallback(async () => {
     setLoading(true);
     setError("");
-    setProgress("Sending to Llama 3.3 70B...");
+    setData(null);
+    const modelLabel = config.model.split("-").slice(0, 3).join(" ");
+    setProgress(`Sending to ${modelLabel}…`);
     try {
       const res = await fetch("/api/insights", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: doc.text.slice(0, 12000), apiKey: config.apiKey, model: config.model }),
+        body: JSON.stringify({
+          text: doc.text.slice(0, 12000),
+          apiKey: config.apiKey,
+          model: config.model,
+        }),
       });
+      setProgress("Generating insight cards…");
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || "Failed");
       setData(json);
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e: unknown) {
+      const err = e as { message?: string };
+      setError(err.message || "Something went wrong.");
     } finally {
       setLoading(false);
     }
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.text, config.apiKey, config.model]);
+
+  // Re-run when the document or model/key changes
+  useEffect(() => {
+    generate();
+  }, [generate]);
 
   if (loading) return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "80vh", gap: 16 }}>
       <div style={{ width: 48, height: 48, border: "3px solid var(--border2)", borderTopColor: "var(--accent)", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
       <p style={{ color: "var(--text2)", fontSize: 14 }}>{progress}</p>
-      <p style={{ color: "var(--text3)", fontSize: 12 }}>Llama 3.3 is reading your PDF and generating cards...</p>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      <p style={{ color: "var(--text3)", fontSize: 12 }}>Reading your PDF and generating insight cards…</p>
+      {/* Skeleton preview */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 220px)", gap: 12, marginTop: 16, opacity: 0.35 }}>
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} style={{ height: 110, borderRadius: 14, background: "var(--bg2)", border: "1px solid var(--border)", animation: "pulse 1.5s ease-in-out infinite", animationDelay: `${i * 0.1}s` }} />
+        ))}
+      </div>
     </div>
   );
 
@@ -78,11 +69,6 @@ export default function InsightsPanel({ doc, config, onSwitchToChat }: { doc: PD
       <button onClick={generate} style={{ padding: "8px 20px", borderRadius: 10, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent2)", cursor: "pointer" }}>
         Try again
       </button>
-      {error.includes("API key") && (
-        <p style={{ color: "var(--text2)", fontSize: 13, maxWidth: 400, textAlign: "center" }}>
-          Add your Groq API key to <code style={{ background: "var(--bg3)", padding: "2px 6px", borderRadius: 4 }}>.env.local</code> as <code style={{ background: "var(--bg3)", padding: "2px 6px", borderRadius: 4 }}>GROQ_API_KEY</code>
-        </p>
-      )}
     </div>
   );
 
@@ -124,7 +110,7 @@ export default function InsightsPanel({ doc, config, onSwitchToChat }: { doc: PD
             {t}
           </button>
         ))}
-        <button onClick={generate} style={{
+        <button onClick={generate} aria-label="Regenerate cards" style={{
           padding: "4px 12px", borderRadius: 20, border: "1px solid var(--border)",
           background: "transparent", color: "var(--text2)", fontSize: 12, cursor: "pointer", marginLeft: "auto",
         }}>
@@ -135,10 +121,15 @@ export default function InsightsPanel({ doc, config, onSwitchToChat }: { doc: PD
       {/* Cards grid */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12, maxWidth: 900, margin: "0 auto" }}>
         {filtered.map(card => {
-          const style = TYPE_STYLES[card.type] || TYPE_STYLES.concept;
+          const style = TYPE_STYLES[card.type] ?? TYPE_STYLES.concept;
           const isExpanded = expanded === card.id;
           return (
             <div key={card.id} onClick={() => setExpanded(isExpanded ? null : card.id)}
+              role="button"
+              aria-expanded={isExpanded}
+              aria-label={`Card: ${card.title}`}
+              tabIndex={0}
+              onKeyDown={e => e.key === "Enter" && setExpanded(isExpanded ? null : card.id)}
               style={{
                 background: "var(--bg2)",
                 borderWidth: "1px 1px 1px 3px",
@@ -181,26 +172,13 @@ export default function InsightsPanel({ doc, config, onSwitchToChat }: { doc: PD
 
               {isExpanded && (
                 <button
-                  onClick={e => {
-                    e.stopPropagation();
-                    setSelectedCardForChat(card);
-                  }}
+                  onClick={e => { e.stopPropagation(); setSelectedCardForChat(card); }}
+                  aria-label={`Deep dive into card: ${card.title}`}
                   style={{
-                    marginTop: 12,
-                    width: "100%",
-                    padding: "8px",
-                    borderRadius: "8px",
-                    border: "1px solid var(--accent)",
-                    background: "rgba(124, 106, 247, 0.1)",
-                    color: "var(--accent2)",
-                    fontSize: 12,
-                    fontWeight: 500,
-                    cursor: "pointer",
-                    transition: "all 0.15s",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: 6,
+                    marginTop: 12, width: "100%", padding: "8px", borderRadius: "8px",
+                    border: "1px solid var(--accent)", background: "rgba(124, 106, 247, 0.1)",
+                    color: "var(--accent2)", fontSize: 12, fontWeight: 500, cursor: "pointer",
+                    transition: "all 0.15s", display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
                   }}
                 >
                   💬 Deep Dive & Ask Questions
@@ -217,7 +195,7 @@ export default function InsightsPanel({ doc, config, onSwitchToChat }: { doc: PD
 
       {filtered.length === 0 && (
         <div style={{ textAlign: "center", color: "var(--text2)", padding: "3rem", maxWidth: 900, margin: "0 auto" }}>
-          No cards match "{filter}" — <button onClick={() => setFilter("all")} style={{ color: "var(--accent2)", background: "none", border: "none", cursor: "pointer" }}>show all</button>
+          No cards match &quot;{filter}&quot; — <button onClick={() => setFilter("all")} style={{ color: "var(--accent2)", background: "none", border: "none", cursor: "pointer" }}>show all</button>
         </div>
       )}
 
@@ -229,6 +207,13 @@ export default function InsightsPanel({ doc, config, onSwitchToChat }: { doc: PD
           onClose={() => setSelectedCardForChat(null)}
         />
       )}
+
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 0.35; }
+          50% { opacity: 0.6; }
+        }
+      `}</style>
     </div>
   );
 }

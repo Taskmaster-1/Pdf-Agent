@@ -24,11 +24,14 @@ export default function SettingsPanel({ config, onSave, onClear, onClose }: Prop
   async function testKey() {
     setTesting(true); setTestResult(null);
     try {
-      const res = await fetch("https://api.groq.com/openai/v1/models", {
-        headers: { Authorization: `Bearer ${key.trim()}` },
+      const res = await fetch("/api/validate-key", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: key.trim() }),
       });
-      if (res.ok) { setTestResult("ok"); setTestMsg("Key is valid!"); }
-      else { setTestResult("fail"); setTestMsg("Invalid key."); }
+      const data = await res.json();
+      if (data.valid) { setTestResult("ok"); setTestMsg(data.message); }
+      else { setTestResult("fail"); setTestMsg(data.message); }
     } catch { setTestResult("fail"); setTestMsg("Network error."); }
     finally { setTesting(false); }
   }

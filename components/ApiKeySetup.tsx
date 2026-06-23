@@ -26,11 +26,14 @@ export default function ApiKeySetup({ onSave }: Props) {
     if (!key.trim()) return;
     setTesting(true); setTestResult(null);
     try {
-      const res = await fetch("https://api.groq.com/openai/v1/models", {
-        headers: { Authorization: `Bearer ${key.trim()}` },
+      const res = await fetch("/api/validate-key", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: key.trim() }),
       });
-      if (res.ok) { setTestResult("ok"); setTestMsg("Valid key — you're all set!"); }
-      else { setTestResult("fail"); setTestMsg("Invalid key. Double-check and try again."); }
+      const data = await res.json();
+      if (data.valid) { setTestResult("ok"); setTestMsg(data.message); }
+      else { setTestResult("fail"); setTestMsg(data.message); }
     } catch {
       setTestResult("fail"); setTestMsg("Connection error. Check your network.");
     } finally { setTesting(false); }

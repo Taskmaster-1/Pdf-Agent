@@ -1,13 +1,35 @@
 import { NextRequest } from "next/server";
 import Groq from "groq-sdk";
 
+const ALLOWED_MODELS = new Set([
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant",
+  "mixtral-8x7b-32768",
+  "gemma2-9b-it",
+  "deepseek-r1-distill-llama-70b",
+]);
+
+const MAX_DOC_CHARS = 20_000; // server-side guard against oversized payloads
+
 export async function POST(req: NextRequest) {
   try {
     const { messages, docText, apiKey, model, cardContext } = await req.json();
 
-    if (!apiKey) {
+    if (!apiKey || typeof apiKey !== "string") {
       return new Response(JSON.stringify({ error: "No API key provided." }), {
         status: 401, headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (!model || !ALLOWED_MODELS.has(model)) {
+      return new Response(JSON.stringify({ error: "Invalid or unsupported model." }), {
+        status: 400, headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (typeof docText !== "string" || docText.length > MAX_DOC_CHARS) {
+      return new Response(JSON.stringify({ error: "Document text too large or invalid." }), {
+        status: 400, headers: { "Content-Type": "application/json" },
       });
     }
 
@@ -50,7 +72,7 @@ Guidelines:
     }
 
     const stream = await groq.chat.completions.create({
-      model: model || "llama-3.3-70b-versatile",
+      model,
       messages: [{ role: "system", content: systemPrompt }, ...messages],
       temperature: 0.6,
       max_tokens: 1500,
@@ -74,10 +96,11 @@ Guidelines:
     return new Response(readable, {
       headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive" },
     });
-  } catch (e: any) {
-    console.error("Chat error:", e);
-    return new Response(JSON.stringify({ error: e?.error?.message || e?.message || "Failed" }), {
-      status: e?.status || 500, headers: { "Content-Type": "application/json" },
+  } catch (e: unknown) {
+    const err = e as { error?: { message?: string }; message?: string; status?: number };
+    console.error("Chat error:", err);
+    return new Response(JSON.stringify({ error: err?.error?.message || err?.message || "Failed" }), {
+      status: err?.status || 500, headers: { "Content-Type": "application/json" },
     });
   }
 }
